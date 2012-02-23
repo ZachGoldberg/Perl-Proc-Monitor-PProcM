@@ -1,0 +1,17 @@
+PProcM -- http://www.fusedcreations.com/PProcM/
+
+PProcM is a system monitor written in perl under GPLv2 and higher.
+PProcM requires the following Perl Modules
+ Time::HiRes
+ POE::Curses
+ Sys::Statistics::Linux
+
+all of which can be gotten off of CPAN.
+
+PProcM creates a file ~/.pprocm to manage its config (which devices to show).  The format of the config is explained within the file
+
+Hotkeys:
+  r - reloads config file
+  o - switches back and fourth between config panel and main page
+  c - when relavent, clears error messages
+  q or control c - quits the program

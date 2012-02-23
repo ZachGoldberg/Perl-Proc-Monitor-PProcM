@@ -1,0 +1,11 @@
+PProcM-1.0
+	--Fix a bug with the units function. 
+	--Fixed up differing hostname lenghts messing up layout
+	--Compressed memory lines to be a bit more convenient and spacewise efficient
+	--Added Config File ~/.pprocm (1.1 will allow command line to specify file)
+	--Added Config View (allows you to modify config file -- chose what to display)
+PProcM-Beta 2
+	--Added CPU Freq
+	--Added Scrolling Hostname
+	--Added Logged in Users (Scrolling)
+	--Misc Fixes

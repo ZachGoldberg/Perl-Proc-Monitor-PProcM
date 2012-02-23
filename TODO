@@ -1,0 +1,10 @@
+Fix me - loading a bad config resets the config?
+Clean up scroller code -- make it just one single function
+Prevent too small a resolution
+Create the following pages:
+	Credits
+	Config
+	Help
+Create a useful README including how to edit config options by hand
+Create Arg to specific different config file
+

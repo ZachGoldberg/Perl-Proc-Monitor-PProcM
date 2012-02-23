@@ -1,0 +1,8 @@
+Its a perl script -- "perl PProcM.pl" or "./PProcM" - make sure you have the modules!
+
+Fuller instructions:
+    * cpan i sys-statistics-linux
+    * wget http://www.fusedcreations.com/PProcM/PProcM-1.0.tar.gz
+    * tar -xzf PProcM-1.0.tar.gz
+    * cp PProcM-1.0/PProcM /usr/bin/PProcM
+    * chmod +x /usr/bin/PProcM 

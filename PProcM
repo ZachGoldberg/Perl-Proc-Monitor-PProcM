@@ -1,0 +1,750 @@
+#!/usr/bin/perl
+#########################################
+#PProcM - Authored by Zach Goldberg v 1.0
+#Perl Proc Monitor
+#http://www.fusedcreations.com/PProcM
+#########################################
+
+use strict;
+use Sys::Statistics::Linux;
+use Time::HiRes;
+use POE qw(Wheel::Curses);
+use Curses;
+my ( $ERROR_MSG, $MANDATE_REFRESH, $CONFIG, $CONFIG_FILE, $STATE );
+
+$STATE = "main";
+
+$CONFIG_FILE = "/home/" . `id -un` . "/.pprocm";
+$CONFIG_FILE =~ s/\n//;
+
+if(!-e $CONFIG_FILE){
+  $ERROR_MSG = " \"o\": toggle config page \"r\": reload config";
+}
+
+
+#Get the config if it exists
+loadconfig($CONFIG_FILE)
+  ;    #Can later be changed to use a diff config with command line arg
+
+my $lxs = new Sys::Statistics::Linux;
+$lxs->set(
+	SysInfo   => 1,
+	MemStats  => 1,
+	CpuStats  => 1,
+	DiskStats => 1,
+	LoadAVG   => 1,
+	NetStats  => 1,
+);
+
+POE::Session->create(
+	inline_states => {
+		_start       => \&start,
+		update_all   => \&curses_refresh,
+		got_input    => \&curses_input,
+		update_stats => \&update_stats,
+
+	},
+);
+
+POE::Kernel->run();
+
+sub start {
+	my ( $kernel, $heap ) = @_[ KERNEL, HEAP ];
+	%$heap = (
+		stats => {
+			rdbyt  => 1,
+			wrtbyt => 1,
+			total  => 1,
+			user   => 1,
+			system => 1,
+			txbyt  => 1,
+			rxbyt  => 1,
+		},
+		ttime => 0,
+		lxs   => $lxs,
+	);
+	$heap->{curses} = POE::Wheel::Curses->new( InputEvent => 'got_input' );
+	$kernel->yield('update_stats');
+}
+
+sub update_stats {
+	my $kernel = $_[KERNEL];
+	my $heap   = $_[HEAP];
+	if ( $STATE eq "main" ) {
+		stats_page( $kernel, $heap );
+	}
+	elsif ( $STATE eq "config" ) {
+		config_page( $kernel, $heap );
+	}
+	noutrefresh();
+	doupdate;
+	Time::HiRes::usleep(30000);
+	$kernel->yield('update_stats');
+}
+
+sub config_page {
+	my ( $kernel, $heap ) = @_;
+	#3 devices, Cpus, Disks, Net
+	
+	move(0,0); clrtoeol();
+	addstr("|------------PProcM Config Panel------------|");
+	move(1,0); clrtoeol();
+	addstr("|--Arrow keys to navigate, Space to toggle--|");
+	move(2,0); clrtoeol();
+	addstr("|-----Cpu-----|-----Net-----|-----Disks-----|");
+	move(3,0); clrtoeol();
+	#Organize some data for display
+	my (@cpus,@nets,@disks);
+	my $cpu = $CONFIG->{DEVICE}->{cpu};
+	my $disk= $CONFIG->{DEVICE}->{disk};
+	my $net= $CONFIG->{DEVICE}->{net};
+	foreach(sort keys %$cpu){
+		push(@cpus,$_);
+	}
+	foreach(sort keys %$disk){
+		push(@disks,$_);
+	}
+	foreach(sort keys %$net){
+		push(@nets,$_);
+	}
+	my $size = max($#nets,$#disks,$#cpus);
+	my $finalx;
+	my $finaly;
+	my $lastcpu=0;
+	my $lastnet=0;
+	my $lastdisk=0;
+	foreach(0..$size+1){ #+1 so the last time it adds a bottom to the longest column
+		move(3+$_,0); clrtoeol();
+		my ($cp,$ne,$di,$cmarker,$nmarker,$dmarker,$cs,$ns,$ds);
+		if($CONFIG->{DEVICE}->{cpu}->{$cpus[$_]} eq "on"){$cp = "X";}else{$cp = " ";}
+		if($CONFIG->{DEVICE}->{net}->{$nets[$_]} eq "on"){$ne = "X";}else{$ne = " ";}
+		if($CONFIG->{DEVICE}->{disk}->{$disks[$_]} eq "on"){$di = "X";}else{$di = " ";}
+		if($heap->{cury} == $_){
+			if($heap->{curx} == 10){$heap->{maxy}=$#cpus;}	
+			if($heap->{curx} == 24){$heap->{maxy}=$#nets;}
+			if($heap->{curx} == 39){$heap->{maxy}=$#disks;}	
+		}
+		$cs = "  ".rsize(5,$cpus[$_])." ".rsize(3,"[$cp]")."  ";
+		$ns = "  ".rsize(5,$nets[$_])." ".rsize(3,"[$ne]")."  ";
+		$ds = "   ".rsize(5,$disks[$_])." ".rsize(3,"[$di]")."   ";
+		if(!$cpus[$_]){
+			$cs="              ";
+			if($cpus[$_-1]){$cs= "|-------------|"; $lastcpu=1;}
+		}
+		if(!$nets[$_]){
+			$ns="              ";
+			if(($cpus[$_] || $cpus[$_-1]) && ($disks[$_] || $disks[$_-1])){
+				$ns="             "; #One shorter.. this takes care of the case when
+									 #net is shorter than cpu and disks -- otherwise having | (whitespace) |
+									 #2 bars..leads to the disks on the right being too far over by 1
+									 #Normally this would be || -- removed by a regx later
+			}
+			if($nets[$_-1]){$ns= "|-------------|"; $lastnet=1;}
+		}
+		if(!$disks[$_]){
+			$ds="              ";
+			if($disks[$_-1]){$ds="|---------------|"; $lastdisk=1;}
+		}
+		my $middlel = "|" if($cpus[$_] || $nets[$_]);
+		my $middler = "|" if($disks[$_] || $nets[$_]);
+		$cmarker ="|" if ($cpus[$_]);
+		$dmarker ="|" if ($disks[$_]);
+		my $string = "$cmarker$cs$middlel$ns$middler$ds$dmarker";
+		$string =~ s/\|\|/\|/g; #Remove any ||s
+		addstr($string);
+	}
+	if($heap->{cury} < 0) {$heap->{cury}=0;}
+	if($heap->{cury} > $heap->{maxy}) {$heap->{cury}=$heap->{maxy};}
+	move($heap->{cury}+3,$heap->{curx});
+	sub max{
+    	my($max) = shift(@_);
+    	foreach my $temp (@_) {
+	        $max = $temp if $temp > $max;
+	    }
+    	return($max);
+	}
+	sub rsize{
+		my($num,$string) = @_;
+		if(length $string < $num){
+			foreach(length $string .. $num-1){
+				$string.=" ";
+			}
+		}
+		return $string;		
+	}
+}
+
+sub stats_page {
+	my ( $kernel, $heap ) = @_;
+	my $stats;
+	my $beginy = 0;
+	my $beginx = 0;
+	if ($ERROR_MSG) {
+		$beginy = 2;
+		move( 0, 0 );
+		clrtoeol();
+		addstr("MSG: $ERROR_MSG\nHit C to clear error message");
+	}
+	if ( $heap->{ttime} != time || !$heap->{stats} || $MANDATE_REFRESH ) {
+		$MANDATE_REFRESH  = 0;
+		$heap->{stat}     = $heap->{lxs}->get;
+		$heap->{userinfo} = getUserInfo();
+		$heap->{ttime}    = time;
+		$heap->{disks}    = "";
+		$heap->{units}    = "";
+		$heap->{cpus}     = "";
+		$heap->{netinfo}  = "";
+		$heap->{cpuspeed} = getCpuSpeed();
+		$stats            = $heap->{stat};
+		$heap->{cpus} = stats_cpu( $heap, $stats, $beginy, $beginx );
+		( $heap->{disks}, $heap->{units} ) =
+		  stats_disks( $heap, $stats, $beginy + 2 + $CONFIG->{COUNT}->{cpu},
+			$beginx );
+		$heap->{meminfo} =
+		  stats_meminfo( $heap, $stats, $beginy + 6, $beginx + 30 );
+		$heap->{netinfo} =
+		  stats_netinfo( $heap, $stats, $beginy + 10, $beginx + 30 );
+	}
+	$stats = $heap->{stat};
+	$heap->{sysinfo} = stats_sysinfo( $heap, $stats, $beginy, $beginx + 30 );
+	stats_userinfo(
+		$heap, $stats,
+		$beginy + 12 + $CONFIG->{COUNT}->{net},
+		$beginx + 30
+	);
+}
+
+sub stats_userinfo {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $users = $heap->{userinfo};
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("|---------Logged in Users---------|");
+	my $level      = 1;
+	my $namestring = "";
+	my %names      = %$users;
+	foreach ( sort keys %names ) {
+		$namestring .= "$_" . "x$names{$_} ";
+	}
+	my $maxLength = 32;
+	if ( length($namestring) < $maxLength ) {
+		foreach ( 1 .. ( $maxLength - length($namestring) ) ) {
+			$namestring .= " ";
+		}
+	}
+	my $ns = "";
+	foreach ( 0 .. $maxLength ) {
+		my $pos = $_ + $heap->{usernameRotate};
+		$pos %= length($namestring);
+		$ns .= substr( $namestring, $pos, 1 );
+	}
+	if ( $heap->{nametimer} % 5 == 0 ) {
+		$heap->{usernameRotate}++;
+		$heap->{usernameRotate} %= length($namestring);
+	}
+	$heap->{nametimer}++;
+	move( $starty + $level, $startx );
+	clrtoeol();
+	addstr("|$ns|");
+	$level++;
+	move( $starty + $level, $startx );
+	clrtoeol();
+	addstr("|---------------------------------|");
+}
+sub stats_netinfo {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $hash = $stats->{"NetStats"};
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("|----------Network Info-----------|");
+	my $interfaces = {};
+	if ( !$heap->{netinfo} ) {
+		foreach my $d ( keys %$hash ) {
+			if ( !$CONFIG->{DEVICE}->{net}->{$d} ) {
+				modifyconfig( "net", $d, "on" );
+			}
+			if ( $CONFIG->{DEVICE}->{net}->{$d} ne "on" ) { next; }
+			my $hash2 = $hash->{$d};
+			foreach my $v ( keys %$hash2 ) {
+				if ( $heap->{stats}->{$v} == 1 ) {
+					$interfaces->{"$d $v"} = units( $hash2->{$v} );
+				}
+			}
+		}
+	}
+	else {
+		$interfaces = $heap->{netinfo};
+	}
+	move( $starty + 1, $startx );
+	clrtoeol();
+	addstr("| Interface   Rx         Tx       |");
+	my $switch = 0;
+	my $level  = 2;
+	my %if     = %$interfaces;
+	foreach ( sort keys %if ) {
+		my $n = $_;
+		$n =~ s/(.*?) .*/$1/;
+		if ( $switch == 0 ) {
+			move( $starty + $level, $startx );
+			clrtoeol();
+			addstr("| $n");
+			move( $starty + $level, $startx + 12 );
+			clrtoeol();
+			addstr("  $interfaces->{$_}");
+			$switch = 1;
+		}
+		else {
+			move( $starty + $level, $startx + 24 );
+			clrtoeol();
+			addstr(" $interfaces->{$_} ");
+			move( $starty + $level, $startx + 33 );
+			clrtoeol();
+			addstr(" |");
+			$level++;
+			$switch = 0;
+		}
+	}
+	move( $starty + $level, $startx );
+	clrtoeol();
+	addstr("|---------------------------------|");
+
+}
+sub stats_meminfo {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $hash = $stats->{"MemStats"};
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("|----------Memory Info------------|");
+	my $y        = 1;
+	my $procinfo = {};
+	foreach my $d ( keys %$hash ) {
+		my $hash2 = $hash->{$d};
+		$procinfo->{$d} = units( $hash2 * 1000.0 );
+	}
+	my $c =
+	  $hash->{cached} * 1000.0 + $hash->{buffers} * 1000.0 + $hash->{slab} *
+	  1000.0;
+	my $used = units( $hash->{memused} * 1000.0 - $c );
+	my $free =
+	  units( $hash->{memtotal} * 1000.0 - ( $hash->{memused} * 1000.0 - $c ) );
+	move( $starty + 1, $startx );
+	clrtoeol();
+	addstr("| Mem Ttl/Free  : $procinfo->{memtotal} $free");
+	move( $starty + 2, $startx );
+	clrtoeol();
+	addstr( "| Mem Usd/Cached: $used " . units($c) );
+
+#	move($starty + 3 , $startx); clrtoeol(); addstr("| Cached Mem.  : ".units($c));
+	move( $starty + 3, $startx );
+	clrtoeol();
+	addstr("| Swap Ttl/Used : $procinfo->{swaptotal} $procinfo->{swapused}");
+
+#	move($starty + 5 , $startx); clrtoeol(); addstr("| Used Swap    : $procinfo->{swapused}");
+	foreach ( 1 .. 3 ) {
+		move( $starty + $_, $startx + 34 );
+		clrtoeol();
+		addstr("|");
+	}
+	move( $starty + 6, $startx );
+	clrtoeol();
+	addstr("|---------------------------------|");
+	return $procinfo;
+
+}
+sub stats_sysinfo {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $hash    = $stats->{"SysInfo"};
+	my $sysinfo = {};
+	foreach my $d ( keys %$hash ) {
+		my $value = $hash->{$d};
+		$sysinfo->{$d} = $value;
+	}
+	my $speed       = $heap->{cpuspeed};
+	my $titlestring =
+" $heap->{sysinfo}->{hostname} $heap->{sysinfo}->{kernel} $heap->{sysinfo}->{release} ";
+	my $maxLength = 33;
+	my $ns        = $titlestring;
+	if ( length($titlestring) > $maxLength ) {
+		$ns = "";
+		foreach ( 1 .. $maxLength ) {
+			my $pos = $_ + $heap->{hostnameRotate};
+			$pos %= length($titlestring);
+			$ns .= substr( $titlestring, $pos, 1 );
+		}
+		if ( $heap->{hosttimer} % 5 == 0 ) {
+			$heap->{hostnameRotate}++;
+			$heap->{hostnameRotate} %= length($titlestring);
+		}
+		$heap->{hosttimer}++;
+	}
+	else {
+		foreach ( length($titlestring) .. $maxLength - 1 ) {
+			$ns .= " ";
+		}
+	}
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("ocM--------System Info------------|");
+	my $l = (
+		length( $sysinfo->{hostname} ) + length( $sysinfo->{kernel} ) +
+		  length( $sysinfo->{release} ) );
+	my $left = 34 - 2 - $l;
+	my $buffer;
+	foreach ( 0 .. int( $left / 2 ) ) {
+		$buffer .= " ";
+	}
+	my $extra;
+	if ( $left % 2 == 0 ) {
+		$buffer =~ s/  //;
+		$extra = " ";
+	}
+	else {
+		$buffer =~ s/ //;
+	}
+	my $load = $stats->{LoadAVG};
+	move( $starty + 1, $startx );
+	clrtoeol();
+	addstr("|$ns|");
+	move( $starty + 2, $startx );
+	clrtoeol();
+	addstr( "| Cpu Freq.    : " . $speed );
+	move( $starty + 3, $startx );
+	clrtoeol();
+	addstr( "| Uptime       : " . $sysinfo->{uptime} );
+	move( $starty + 4, $startx );
+	clrtoeol();
+	addstr( "| Idletime     : " . $sysinfo->{idletime} );
+	move( $starty + 5, $startx );
+	clrtoeol();
+	addstr("| Load Avg     : $load->{avg_1} $load->{avg_5} $load->{avg_15}");
+	move( $starty + 6, $startx );
+	clrtoeol();
+	addstr("|---------------------------------|");
+
+	foreach ( 2 .. 5 ) {
+		move( $starty + $_, $startx + 34 );
+		clrtoeol();
+		addstr("|");
+	}
+	return $sysinfo;
+}
+sub stats_disks {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $hash = $stats->{DiskStats};
+	my ( %disks, %units );
+	if ( !$heap->{disks} ) {
+		foreach my $d ( keys %$hash ) {
+			if ( !$CONFIG->{DEVICE}->{disk}->{$d} ) {
+				modifyconfig( "disk", $d, "on" );
+			}
+			if ( $CONFIG->{DEVICE}->{disk}->{$d} ne "on" ) { next; }
+			my $hash2 = $hash->{$d};
+			foreach my $v ( keys %$hash2 ) {
+				if ( $heap->{stats}->{$v} == 1 ) {
+					$disks{"$d $v"} = units( $hash2->{$v} );
+				}
+			}
+		}
+
+	}
+	else {
+		my $disk = $heap->{disks};
+		%disks = %$disk;
+	}
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("|-----------Disks-------------|");
+	move( $starty + 1, $startx );
+	clrtoeol();
+	addstr("| Disk      Read     Write    ");
+	my $switch = 0;
+	my $level  = 2;
+
+	foreach ( sort keys %disks ) {
+		my $n = $_;
+		$n =~ s/(.*?) .*/$1/;
+		if ( $switch == 0 ) {
+			move( $starty + $level, $startx );
+			clrtoeol();
+			addstr("| $n");
+			move( $starty + $level, $startx + 10 );
+			clrtoeol();
+			addstr("  $disks{$_}");
+			$switch = 1;
+		}
+		else {
+			move( $starty + $level, $startx + 20 );
+			clrtoeol();
+			addstr(" $disks{$_} ");
+			move( $starty + $level, $startx + 29 );
+			clrtoeol();
+			addstr(" |");
+			$level++;
+			$switch = 0;
+		}
+	}
+	move( $starty + $level, $startx );
+	clrtoeol();
+	addstr("|-----------------------------|");
+	return \%disks;
+}
+sub stats_cpu {
+	my ( $heap, $stats, $starty, $startx ) = @_;
+	my $cpus = {};
+	if ( !$heap->{cpus} ) {
+		my $hash = $stats->{CpuStats};
+		foreach my $d ( keys %$hash ) {
+			if ( !$CONFIG->{DEVICE}->{cpu}->{$d} ) {
+				modifyconfig( "cpu", $d, "on" );
+			}
+			if ( $CONFIG->{DEVICE}->{cpu}->{$d} ne "on" ) { next; }
+			my $hash2 = $hash->{$d};
+			$cpus->{$d} = {};
+			foreach my $v ( keys %$hash2 ) {
+				if ( $heap->{stats}->{$v} == 1 ) {
+					$cpus->{$d}->{$v} = $hash2->{$v} . "%";
+				}
+			}
+		}
+	}
+	else {
+		$cpus = $heap->{cpus};
+	}
+	move( $starty, $startx );
+	clrtoeol();
+	addstr("|-----------CPU Info-------PPr-");
+	move( $starty + 1, $startx );
+	clrtoeol();
+	addstr("| CPU  Total   User   System  |");
+	my $level  = 2;
+	my $extras = 0;
+
+	foreach ( sort keys %$cpus ) {
+		my @vars = (
+			$_,
+			$cpus->{$_}->{total},
+			$cpus->{$_}->{user},
+			$cpus->{$_}->{system}
+		);
+		foreach my $v ( 0 .. $#vars ) {
+			$vars[$v] =~ s/ //g;
+			if ( length( $vars[$v] ) <= 6 ) {
+				foreach ( length( $vars[$v] ) .. 6 ) {
+					$vars[$v] .= " ";
+				}
+			}
+		}
+		my $n = $_;
+		foreach ( length($n) .. 3 ) {
+			$n .= " ";
+		}
+		move( ( $starty + $level ), $startx );
+		clrtoeol();
+		addstr("| $n $vars[1] $vars[2] $vars[3]|");
+		$level++;
+		$extras++;
+	}
+	$heap->{extras} = $extras;
+	move( $starty + $level, $startx );
+	clrtoeol();
+	addstr("|-------------------------|");
+	return $cpus;
+}
+sub units {
+	my $v = $_[0];
+
+	#$v   =~ s/\D//g;
+	my $t = $v;
+	my $u = "B";
+
+#        if($t == 0){$u="KB";} #Just looks better I think, although perhaps its worth changing
+	if ( $t > 1000.0 ) {
+		$t /= 1000.0;
+		$u = "KB";
+	}
+	if ( $t > 1000.0 ) {
+		$t /= 1000.0;
+		$u = "MB";
+	}
+	if ( $t > 100 ) {
+		$t = int($t);
+	}
+	else {
+
+		#only 1 decimal place
+		$t =~ s/\.(.).*/\.$1/;
+	}
+	return "$t $u";
+}
+sub curses_refresh {
+	my $kernel = $_[KERNEL];
+	$kernel->yield('update_stats');
+}
+sub curses_input {
+	my ( $kernel, $heap, $keystroke ) = @_[ KERNEL, HEAP, ARG0 ];
+
+	$keystroke = uc( keyname($keystroke) ) if $keystroke =~ /^\d{2,}$/;
+	if ( ( $keystroke eq "\cC" ) or ( lc($keystroke) eq 'q' ) ) {
+		exit(0);
+		return;
+	}
+	if ( ( lc($keystroke) eq 'c' ) ) {
+		$ERROR_MSG       = "";
+		$MANDATE_REFRESH = 1;
+		clear();
+		return;
+	}
+	if ( ( lc($keystroke) eq 'r' ) ) {
+		loadconfig($CONFIG_FILE);
+		$MANDATE_REFRESH = 1;
+		clear();
+		return;
+	}
+	if( lc $keystroke eq "o"){
+		if($STATE eq "main"){
+			$STATE="config";
+			$heap->{curx}=10;
+			$heap->{cury}=0
+		}else{
+			$STATE="main";
+			$MANDATE_REFRESH=1;
+		}
+		clear();
+	}
+	if( $keystroke eq "KEY_UP"){
+		$heap->{cury}--;
+	}
+	if( $keystroke eq "KEY_DOWN"){
+		$heap->{cury}++;
+	}
+	if( $keystroke eq "KEY_RIGHT"){
+		$heap->{curx}+=14;
+		if($heap->{curx}==38){$heap->{curx}=39;}
+		if($heap->{curx} > 39){
+			$heap->{curx}=39;
+		}
+	}
+	if( $keystroke eq "KEY_LEFT"){
+		if($heap->{curx}==39){$heap->{curx}=38;}
+		$heap->{curx}-=14;
+		if($heap->{curx} < 0){
+			$heap->{curx}=10;
+		}	
+	}
+	if($keystroke eq " " && $STATE eq "config"){
+		my $type;
+		my @arr;
+		if($heap->{curx} == 10){
+			$type = "cpu";
+			my $cp = $CONFIG->{DEVICE}->{cpu};
+			foreach(sort keys %$cp){push(@arr,$_);}
+		}
+		if($heap->{curx} == 24){
+			$type = "net";
+			my $net = $CONFIG->{DEVICE}->{net};
+			foreach(sort keys %$net){push(@arr,$_);}
+		}
+		if($heap->{curx} == 39){
+			$type = "disk";
+			my $disk = $CONFIG->{DEVICE}->{disk};
+			foreach(sort keys %$disk){push(@arr,$_);}
+		}
+		if($CONFIG->{DEVICE}->{$type}->{$arr[$heap->{cury}]} eq "on"){
+			modifyconfig($type,$arr[$heap->{cury}],"off");
+		}else{
+			modifyconfig($type,$arr[$heap->{cury}],"on");
+		}
+	}
+
+}
+#MANUALLY getting stuff from proc/who!  Oh boy!
+sub getCpuSpeed {
+	my $procinfo = `cat /proc/cpuinfo`;
+	$procinfo =~ m/cpu MHz.*?: (.*)\n/;
+	return $1 . " Mhz";
+}
+sub getUserInfo {
+	my $who = `who -q`;
+	$who =~ s/[\r\n].*//g;
+	my @dups = split( / /, $who );
+	my %users;
+	foreach (@dups) { $users{$_}++; }
+	return \%users;
+}
+sub loadconfig {
+	my $file = $_[0];
+	if ( !-e $file ) {
+		open( file, ">$file" )
+		  || do { $ERROR_MSG = "Error opening file $file !"; return; };
+		print file configstarter();
+		close(file);
+	}
+	open( file, $file );
+	my @configdata = <file>;
+	close(file);
+	my $TCONFIG = $CONFIG;
+  CONFIGLOOP: foreach ( 0 .. $#configdata ) {
+
+		#remove any comments from the line
+		$configdata[$_] =~ s/\#.*//;
+		my $line = lc $configdata[$_];    #to save on typing
+		$line =~ s/[\n\r]//g;
+
+		#PROCESS THE LINES INTO CONFIG AND COUNT
+		#make sure line is in proper format or throw an error
+		if ( $line !~ m/(cpu|disk|net):(.*):(on|off)/ && length($line) > 1 ) {
+			$ERROR_MSG = "Improperly formatted config file at line $_";
+			return;
+		}
+		my ( $type, $device, $opt ) = ( $1, $2, $3 );
+		$TCONFIG->{DEVICE}->{$type}->{$device} = $opt;
+		if ( $opt eq "on" && $CONFIG->{DEVICE}->{$type}->{$device} ne "on" ) {
+			$TCONFIG->{COUNT}->{$type}++;
+		}
+	}
+
+#If we found a bad config, we want to make sure we still keep the old one, so only clear now
+	clearconfig();
+	$CONFIG = $TCONFIG;
+}
+sub modifyconfig {
+	my ( $type, $device, $state ) = @_;
+	my $pstate = $CONFIG->{DEVICE}->{$type}->{$device};
+	$CONFIG->{DEVICE}->{$type}->{$device} = $state;
+	if ( $pstate ne $state || !$pstate ) {
+		if ( $state eq "on" ) {
+			$CONFIG->{COUNT}->{$type}++;
+		}
+		else {
+			$CONFIG->{COUNT}->{$type}--;
+		}
+	}
+	writeconfig();
+}
+sub writeconfig {
+	open( file, ">$CONFIG_FILE" );
+	print file configstarter();
+	my $hash = $CONFIG->{DEVICE};
+	foreach my $type ( sort keys %$hash ) {    #should be net cpu and disks
+		my $typehash = $hash->{$type};
+		foreach my $device ( sort keys %$typehash ) {
+			if ( $type && $device && $typehash->{$device} ) {
+				print file $type . ":" . $device . ":"
+				  . $typehash->{$device} . "\n";
+			}
+		}
+	}
+	close(file);
+}
+sub clearconfig {
+	$CONFIG                   = {};
+	$CONFIG->{DEVICE}         = {};
+	$CONFIG->{DEVICE}->{cpu}  = {};
+	$CONFIG->{DEVICE}->{net}  = {};
+	$CONFIG->{DEVICE}->{disk} = {};
+	$CONFIG->{COUNT}          = {};
+}
+sub configstarter {
+	return
+"#SYNTAX: TYPE:DEVICE:(on|off)\n#Type can be any of: cpu net disk\n#Examples:\n#disk:hda1:on\n#net:eth1:off\n#cpu:cpu1:off\n";
+}

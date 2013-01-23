@@ -14,7 +14,7 @@ my ( $ERROR_MSG, $MANDATE_REFRESH, $CONFIG, $CONFIG_FILE, $STATE );
 
 $STATE = "main";
 
-$CONFIG_FILE = "/home/" . `id -un` . "/.pprocm";
+$CONFIG_FILE = $ENV{"HOME"}."/.pprocm";
 $CONFIG_FILE =~ s/\n//;
 
 if(!-e $CONFIG_FILE){
